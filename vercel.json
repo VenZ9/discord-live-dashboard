@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "//": "WARNING: Vercel Functions are serverless and cannot hold the long-lived Discord Gateway WebSocket this app depends on, nor keep in-memory state between invocations. This config is provided for the frontend-only / demo deployment path. For real live data deploy the long-running service to Railway, Render, Fly.io or a VPS - see DEPLOY.md.",
+  "version": 2,
+  "builds": [
+    { "src": "public/**", "use": "@vercel/static" }
+  ]
+}

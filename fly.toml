@@ -1,0 +1,30 @@
+# fly.toml - Fly.io config for the Discord Live Dashboard
+# Deploy with:  fly launch --no-deploy  then  fly secrets set DISCORD_BOT_TOKEN=...  then  fly deploy
+app = "discord-live-dashboard"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  DEMO_MODE = "0"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false   # keep the machine running - the gateway must stay connected
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

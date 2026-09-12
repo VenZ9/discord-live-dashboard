@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Discord Live Dashboard</title>
+<link rel="preconnect" href="https://cdn.discordapp.com" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◈</span>
+    <div>
+      <h1>Discord Live Dashboard</h1>
+      <p id="botLine" class="muted">connecting…</p>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="totals" id="totals"></div>
+    <div class="conn" id="conn">
+      <span class="pulse" id="connDot"></span>
+      <span id="connText">connecting…</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <aside class="col col-servers">
+    <div class="col-head">
+      <h2>Servers</h2>
+      <span class="chip" id="guildCount">0</span>
+    </div>
+    <div class="scroll" id="serverList">
+      <div class="empty">Waiting for gateway data…</div>
+    </div>
+  </aside>
+
+  <section class="col col-channels">
+    <div class="col-head">
+      <h2 id="guildTitle">No server selected</h2>
+      <button class="btn ghost" id="syncBtn" title="Ask Discord for the full member list">Sync members</button>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="scroll" id="channelList">
+      <div class="empty">Select a server to see its channels.</div>
+    </div>
+  </section>
+
+  <section class="col col-chat">
+    <div class="col-head chat-head">
+      <div>
+        <h2 id="chatTitle">Live chat</h2>
+        <p class="muted small" id="chatSubtitle">Pick a text channel</p>
+      </div>
+      <div class="live-badge" id="liveBadge"><span class="pulse"></span>LIVE</div>
+    </div>
+    <div class="messages" id="messages">
+      <div class="empty">Select a text channel to watch messages stream in.</div>
+    </div>
+    <div class="chatnote">
+      Read-only live view — messages arrive in real time via the Discord gateway as they are posted.
+    </div>
+  </section>
+
+</main>
+
+<input type="hidden" id="selectedGuild" value="" />
+<input type="hidden" id="selectedChannel" value="" />
+
+<script src="./app.js"></script>
+</body>
+</html>
