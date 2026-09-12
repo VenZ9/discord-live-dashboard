@@ -11,6 +11,21 @@ streams live data to the browser over SSE.
 
 ---
 
+## Deploying
+
+Hosting configs are included for **Railway, Render, Fly.io, Docker and any VPS**
+(`railway.json`, `render.yaml`, `fly.toml`, `Dockerfile`, `Procfile`).
+
+> ⚠️ **Vercel cannot host the live part of this app.** Vercel Functions are
+> serverless, so they cannot hold the persistent Discord Gateway WebSocket or keep
+> in-memory state between invocations. See **[DEPLOY.md](DEPLOY.md)** for the full
+> explanation and the recommended hosts.
+
+**Quickest path:** push to GitHub → Railway/Render "Deploy from repo" → set
+`DISCORD_BOT_TOKEN` → done. Steps for every host are in [DEPLOY.md](DEPLOY.md).
+
+---
+
 ## Quick start
 
 ```bash
