@@ -24,6 +24,13 @@ Hosting configs are included for **Railway, Render, Fly.io, Docker and any VPS**
 **Quickest path:** push to GitHub → Railway/Render "Deploy from repo" → set
 `DISCORD_BOT_TOKEN` → done. Steps for every host are in [DEPLOY.md](DEPLOY.md).
 
+> 📌 **Current status of this deployment:** see **[DEPLOY_STATUS.md](DEPLOY_STATUS.md)** —
+> what was verified live, and what still needs doing.
+
+> 🔎 **Status update (2026-09-12):** this app has been **run and verified live in bot
+> mode against the real Discord Gateway** — it reports real per-server counts and real
+> channel message history. See [DEPLOY_STATUS.md](DEPLOY_STATUS.md).
+
 ---
 
 ## Quick start
