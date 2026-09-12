@@ -1,12 +1,13 @@
 {
   "name": "discord-live-dashboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Real-time Discord dashboard: live per-server member/presence counts and per-channel live chat, driven by the Discord Gateway (WebSocket) and streamed to the browser over SSE.",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "demo": "node src/server.js --demo"
+    "demo": "node src/server.js --demo",
+    "check": "node test/realtime-check.js"
   },
   "engines": {
     "node": ">=18.0.0"

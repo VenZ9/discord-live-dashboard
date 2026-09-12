@@ -12,7 +12,8 @@ COPY src/ ./src/
 COPY public/ ./public/
 
 ENV NODE_ENV=production
-ENV PORT=3000
+# Do NOT hard-code PORT here: hosts (Railway/Render/Fly) inject it and route
+# traffic to that value. src/server.js falls back to 3000 when it is unset.
 EXPOSE 3000
 
 # Healthcheck so hosts (Railway, Render, Fly) can confirm liveness.

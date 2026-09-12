@@ -2,17 +2,26 @@ services:
   - type: web
     name: discord-live-dashboard
     runtime: node
-    plan: starter          # 'free' sleeps after inactivity - live gateway would drop
+    plan: starter          # 'free' spins the service down after inactivity, which drops
+                           # the Discord Gateway WebSocket and the live SSE stream.
     buildCommand: npm install
     startCommand: node src/server.js
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
+      # ---- REQUIRED -------------------------------------------------------
+      # Paste the bot token in the Render dashboard (Environment tab).
+      # sync: false keeps it out of git — never commit the real value.
       - key: DISCORD_BOT_TOKEN
-        sync: false        # set in the Render dashboard, never in git
+        sync: false
+      # ---- DO NOT SET PORT ------------------------------------------------
+      # Render injects PORT itself and routes traffic to it. Hard-coding a value
+      # here overrides that and breaks the port binding / health check.
+      # ---- OPTIONAL -------------------------------------------------------
       - key: DEMO_MODE
         value: "0"
-      - key: PORT
-        value: "3000"
       - key: NODE_VERSION
         value: "20"
+      # Set to "1" in the Render dashboard when you want verbose gateway logs.
+      - key: DEBUG
+        value: "0"

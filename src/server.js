@@ -8,6 +8,25 @@
  *
  * In demo mode a synthetic client emits the same events, so the live path can
  * be verified without a bot token.
+ *
+ * ---------------------------------------------------------------------------
+ * v1.0.1 reliability fixes (the "stuck on connecting" incident):
+ *
+ *   * ORDERING. `app.listen(PORT)` now runs FIRST, before anything touches
+ *     Discord. Previously the HTTP server was only started after
+ *     `client.start()` resolved, and that promise only resolved once the
+ *     gateway socket was fully open - so a slow or blocked gateway handshake
+ *     meant the port never bound. On a platform that health-checks the port
+ *     (Render), that is reported as a FAILED DEPLOY, and the browser shows
+ *     "connecting" with a generic error.
+ *
+ *   * SELF-HEALING. Startup errors are no longer terminal. A fatal state is
+ *     retried in the background on a backoff, so fixing the token or enabling
+ *     the privileged intents recovers the dashboard without a redeploy.
+ *
+ *   * HONEST HEALTH. /api/health and /api/diagnostics report whether a token is
+ *     configured, the last error and when it happened, and the gateway attempt
+ *     count - so the failure is visible without digging through logs.
  */
 
 require('dotenv').config();
@@ -15,7 +34,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const { Store } = require('./state');
-const { DiscordClient } = require('./discord');
+const { DiscordClient, USER_AGENT } = require('./discord');
 const { DemoClient } = require('./demo');
 
 // --------------------------------------------------------------------- config
@@ -32,10 +51,30 @@ const GUILD_FILTER = (process.env.GUILD_IDS || '')
   .filter(Boolean);
 const DEBUG = process.env.DEBUG === '1';
 const REFRESH_MS = Number(process.env.COUNT_REFRESH_MS || 60000);
+/** Backoff before retrying a fatal Discord startup error. */
+const FATAL_RETRY_MS = Number(process.env.FATAL_RETRY_MS || 5 * 60 * 1000);
 
 const store = new Store({ maxMessages: MAX_MESSAGES });
 const listeners = new Set();
 let client = null;
+
+/** Diagnostic bookkeeping surfaced through /api/health. */
+const diag = {
+  tokenConfigured: Boolean(TOKEN),
+  demoConfigured: DEMO,
+  gatewayAttempts: 0,
+  lastError: null,
+  lastErrorAt: null,
+  readySince: null,
+  fatalRetryTimer: null,
+  userAgent: USER_AGENT,
+};
+
+function noteError(message) {
+  diag.lastError = message || null;
+  diag.lastErrorAt = message ? new Date().toISOString() : null;
+  if (message) console.error('[dashboard] error:', message);
+}
 
 // ------------------------------------------------------------------- SSE glue
 
@@ -92,7 +131,19 @@ function shouldTrack(guildId) {
 function wireClient(c, mode) {
   c.on('state', (s) => {
     const conn = store.setConnection({ state: s.state, error: s.error || null, mode });
+    if (s.state === 'error') noteError(s.error || 'gateway reported an error state');
     broadcast('state', conn);
+  });
+
+  // The REST identity probe failed at boot; the gateway READY payload will
+  // supply the identity instead. Surface it, but do NOT treat it as fatal.
+  c.on('identityPending', (info) => {
+    console.warn('[dashboard] REST identity probe failed, will use gateway READY:', info.error);
+    broadcast('state', {
+      ...store.connection,
+      error: null,
+      notice: 'REST identity check is retrying in the background; gateway data still flows.',
+    });
   });
 
   c.on('user', (u) => {
@@ -102,6 +153,8 @@ function wireClient(c, mode) {
 
   c.on('ready', () => {
     store.setConnection({ state: 'ready', error: null, mode });
+    diag.readySince = new Date().toISOString();
+    noteError(null);
     broadcast('state', store.connection);
     // Channels/members arrive with GUILD_CREATE; ask for the full member list
     // where the client supports it (needs the privileged GUILD_MEMBERS intent).
@@ -115,6 +168,7 @@ function wireClient(c, mode) {
 
   c.on('resumed', () => {
     store.setConnection({ state: 'ready', error: null, mode });
+    noteError(null);
     broadcast('state', store.connection);
   });
 
@@ -208,6 +262,8 @@ function wireClient(c, mode) {
 
   c.on('error', (err) => {
     console.error('[dashboard] client error:', err.message);
+    diag.lastError = err.message;
+    diag.lastErrorAt = new Date().toISOString();
   });
 }
 
@@ -225,6 +281,49 @@ app.get('/api/health', (_req, res) => {
     guilds: store.guilds.size,
     listeners: listeners.size,
     uptimeSeconds: Math.round(process.uptime()),
+    // --- diagnostics: enough to tell WHY it is not live, without log access ---
+    tokenConfigured: diag.tokenConfigured,
+    demo: DEMO,
+    lastError: diag.lastError,
+    lastErrorAt: diag.lastErrorAt,
+    readySince: diag.readySince,
+  });
+});
+
+app.get('/api/diagnostics', (_req, res) => {
+  const hints = [];
+  if (!diag.tokenConfigured) {
+    hints.push(
+      'DISCORD_BOT_TOKEN is not set - the dashboard is running the built-in simulator. Set it in your host\'s environment settings.'
+    );
+  }
+  if (diag.lastError && /4004|401/i.test(diag.lastError)) {
+    hints.push('The bot token looks invalid or was reset. Paste the current token from the Developer Portal.');
+  }
+  if (diag.lastError && /intents|4014|4013/i.test(diag.lastError)) {
+    hints.push(
+      'Privileged intents are disabled. Enable "Server Members" and "Message Content" under Bot > Privileged Gateway Intents.'
+    );
+  }
+  if (diag.tokenConfigured && store.connection.state === 'ready' && store.guilds.size === 0) {
+    hints.push('The gateway is connected but the bot is in no servers. Invite it with the URL in README/DEPLOY.');
+  }
+  if (store.connection.state === 'connecting' && !diag.lastError) {
+    hints.push('Gateway handshake in progress - this normally settles within a few seconds.');
+  }
+
+  res.json({
+    bot: store.botUser,
+    connection: store.connection,
+    tokenConfigured: diag.tokenConfigured,
+    demo: DEMO,
+    gatewayAttempts: diag.gatewayAttempts,
+    lastError: diag.lastError,
+    lastErrorAt: diag.lastErrorAt,
+    readySince: diag.readySince,
+    uptimeSeconds: Math.round(process.uptime()),
+    port: PORT,
+    hints,
   });
 });
 
@@ -235,6 +334,7 @@ app.get('/api/config', (_req, res) => {
     demo: DEMO,
     guildFilter: GUILD_FILTER,
     readOnly: true,
+    version: '1.0.1',
   });
 });
 
@@ -296,15 +396,18 @@ app.get('/api/channels/:channelId/messages', async (req, res) => {
     for (const m of ordered) store.ingestMessage(m, { silent: true });
     res.json({ channelId, source: 'rest', messages: store.listMessages(channelId, limit) });
   } catch (err) {
-    res.status(err.status || 500).json({
+    const status = err.status === 429 ? 503 : err.status || 500;
+    res.status(status).json({
       error: 'Failed to fetch channel history from Discord',
       detail: err.message,
       hint:
         err.status === 403
           ? 'The bot needs the "Read Message History" permission in this channel.'
           : err.status === 401
-            ? 'The bot token is invalid.'
-            : undefined,
+            ? 'The bot token is invalid - check DISCORD_BOT_TOKEN.'
+            : err.status === 429
+              ? 'Discord rate limited the request. It will recover automatically; retry in a moment.'
+              : undefined,
     });
   }
 });
@@ -326,6 +429,9 @@ app.get('/api/stream', (req, res) => {
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
+  // Tell EventSource how fast to retry if the stream drops (Render/proxies can
+  // cut a long-lived response; the browser must come back quickly).
+  res.write('retry: 3000\n\n');
   res.write(': connected\n\n');
 
   listeners.add(res);
@@ -343,13 +449,15 @@ app.get('/api/stream', (req, res) => {
     serverTime: new Date().toISOString(),
   });
 
+  // Keep-alive comment well inside Render's / Cloudflare's idle timeout, so the
+  // stream is not silently closed for inactivity.
   const keepAlive = setInterval(() => {
     try {
       res.write(': ping\n\n');
     } catch {
       /* handled by close */
     }
-  }, 20000);
+  }, 15000);
 
   req.on('close', () => {
     clearInterval(keepAlive);
@@ -382,29 +490,81 @@ async function refreshGuildCounts() {
   broadcastTotals();
 }
 
-async function main() {
+/**
+ * Connect to Discord. Never throws, never blocks the HTTP server: any failure
+ * is recorded as a diagnostic and retried in the background.
+ */
+async function startDiscord() {
   if (DEMO) {
     if (!TOKEN) console.log('[dashboard] No DISCORD_BOT_TOKEN set -> starting in DEMO mode.');
     else console.log('[dashboard] DEMO mode forced -> starting the simulator.');
     store.setConnection({ state: 'connecting', mode: 'demo', error: null });
     client = new DemoClient({ debug: DEBUG });
     wireClient(client, 'demo');
-    await client.start();
-  } else {
-    console.log('[dashboard] Starting in BOT mode.');
-    store.setConnection({ state: 'connecting', mode: 'bot', error: null });
-    client = new DiscordClient(TOKEN, { debug: DEBUG });
-    wireClient(client, 'bot');
-    client.on('ready', () => {
-      setTimeout(refreshGuildCounts, 2500);
-    });
     try {
       await client.start();
     } catch (err) {
-      console.error('[dashboard] Failed to start bot:', err.message);
-      store.setConnection({ state: 'error', mode: 'bot', error: err.message });
+      noteError(`Demo client failed: ${err.message}`);
+      store.setConnection({ state: 'error', mode: 'demo', error: err.message });
     }
+    return;
   }
+
+  console.log('[dashboard] Starting in BOT mode.');
+  diag.gatewayAttempts++;
+  store.setConnection({ state: 'connecting', mode: 'bot', error: null });
+  client = new DiscordClient(TOKEN, { debug: DEBUG });
+  wireClient(client, 'bot');
+  client.on('ready', () => setTimeout(refreshGuildCounts, 2500));
+
+  try {
+    // Resolves once the socket is connecting (NOT once READY arrives), so this
+    // can never hang the process.
+    await client.start();
+  } catch (err) {
+    noteError(`Failed to start bot: ${err.message}`);
+    store.setConnection({ state: 'error', mode: 'bot', error: err.message });
+  }
+}
+
+/**
+ * If the gateway landed in a fatal state (bad token, disabled intents), retry
+ * periodically so that fixing the setting on the Discord side - or in the host's
+ * env tab - recovers the dashboard WITHOUT a redeploy.
+ */
+function scheduleFatalRetry() {
+  clearTimeout(diag.fatalRetryTimer);
+  diag.fatalRetryTimer = setTimeout(async () => {
+    if (store.connection.state !== 'error') return;
+    console.log('[dashboard] retrying Discord connection after fatal error...');
+    if (client && typeof client.destroy === 'function') client.destroy();
+    await startDiscord();
+    scheduleFatalRetry();
+  }, FATAL_RETRY_MS);
+  if (diag.fatalRetryTimer.unref) diag.fatalRetryTimer.unref();
+}
+
+async function main() {
+  // -------------------------------------------------------------------------
+  // 1. BIND THE PORT FIRST. This is the whole point: the platform's port and
+  //    health check must succeed immediately, regardless of Discord's state.
+  // -------------------------------------------------------------------------
+  const server = app.listen(PORT, () => {
+    console.log(`\n  Discord Live Dashboard v1.0.1`);
+    console.log(`  mode      : ${DEMO ? 'DEMO (synthetic live data)' : 'BOT (Discord Gateway)'}`);
+    console.log(`  token     : ${diag.tokenConfigured ? 'configured' : 'NOT CONFIGURED'}`);
+    console.log(`  port      : ${PORT}`);
+    console.log(`  health    : http://localhost:${PORT}/api/health`);
+    console.log(`  stream    : http://localhost:${PORT}/api/stream\n`);
+  });
+  server.on('error', (err) => {
+    noteError(`HTTP server error: ${err.message}`);
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. Only then talk to Discord - in the background.
+  // -------------------------------------------------------------------------
+  startDiscord().then(scheduleFatalRetry);
 
   // Periodic recompute so the UI always reflects fresh derived counts.
   setInterval(() => {
@@ -413,14 +573,6 @@ async function main() {
   }, 15000);
 
   if (!DEMO) setInterval(refreshGuildCounts, REFRESH_MS);
-
-  app.listen(PORT, () => {
-    console.log(`\n  Discord Live Dashboard`);
-    console.log(`  mode      : ${DEMO ? 'DEMO (synthetic live data)' : 'BOT (Discord Gateway)'}`);
-    console.log(`  dashboard : http://localhost:${PORT}`);
-    console.log(`  stream    : http://localhost:${PORT}/api/stream`);
-    console.log(`  health    : http://localhost:${PORT}/api/health\n`);
-  });
 }
 
 function shutdown() {
@@ -438,6 +590,12 @@ function shutdown() {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// A rejected promise anywhere must not silently take the dashboard down with a
+// closed port; log it and keep serving (the process is a long-running service).
+process.on('unhandledRejection', (reason) => {
+  console.error('[dashboard] unhandled rejection:', reason && reason.message ? reason.message : reason);
+});
 
 main().catch((err) => {
   console.error('[dashboard] fatal:', err);

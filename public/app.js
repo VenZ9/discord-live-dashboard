@@ -19,6 +19,10 @@ const state = {
   totals: null,
   historyLimit: 100,
   demo: false,
+  // SSE health, so a dropped live stream is visible instead of silent.
+  streamError: null,
+  streamFailures: 0,
+  streamRetryTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -442,13 +446,67 @@ function renderConnection() {
     ? `${bot.global_name || bot.username}${bot.bot ? ' · bot account' : ''}`
     : conn.mode === 'demo'
       ? 'demo simulator'
-      : 'connecting…';
+      : conn.state === 'error'
+        ? 'not connected'
+        : 'connecting…';
+
+  renderBanner(conn);
+}
+
+/**
+ * Show the REAL reason instead of an indefinite "connecting". Previously a
+ * failed gateway was only parked in a tooltip, so the UI looked stuck rather
+ * than broken.
+ */
+function renderBanner(conn) {
+  const el = $('banner');
+  if (!el) return;
+
+  if (conn.state === 'ready') {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+
+  if (conn.state === 'error') {
+    const msg = conn.error || 'The Discord gateway reported an error.';
+    // Turn the most common failure codes into something actionable.
+    let hint = '';
+    if (/4004|invalid bot token|401\b/i.test(msg)) {
+      hint =
+        " The DISCORD_BOT_TOKEN value is likely wrong or was reset — update it in your host's environment settings.";
+    } else if (/4014|4013|intents/i.test(msg)) {
+      hint =
+        ' Enable "Server Members" and "Message Content" under Bot → Privileged Gateway Intents in the Discord Developer Portal.';
+    } else if (/429|rate limit/i.test(msg)) {
+      hint = ' Discord rate limited the request; the dashboard is retrying automatically.';
+    }
+    el.hidden = false;
+    el.textContent = `⚠ ${msg}${hint}`;
+    return;
+  }
+
+  if (state.streamError) {
+    el.hidden = false;
+    el.textContent = `⚠ Live connection lost (${state.streamError}). Reconnecting…`;
+    return;
+  }
+
+  el.hidden = true;
+  el.textContent = '';
 }
 
 // ------------------------------------------------------------------- SSE
 
 function connectStream() {
+  state.streamError = null;
   const es = new EventSource('/api/stream');
+
+  es.onopen = () => {
+    state.streamError = null;
+    state.streamFailures = 0;
+    renderConnection();
+  };
 
   es.addEventListener('init', (e) => {
     const d = JSON.parse(e.data);
@@ -532,9 +590,23 @@ function connectStream() {
   });
 
   es.onerror = () => {
+    state.streamFailures = (state.streamFailures || 0) + 1;
+    state.streamError = `attempt ${state.streamFailures}`;
     state.connection = { ...(state.connection || {}), state: 'connecting' };
     renderConnection();
-    // EventSource reconnects on its own; `init` will re-sync the full state.
+    // EventSource retries on its own, but the retry delay is only honoured from
+    // the `retry:` directive. If the server/proxy keeps cutting the stream, fall
+    // back to a backoff so we are not hammering it with reconnects.
+    if (state.streamFailures > 2) {
+      try {
+        es.close();
+      } catch {
+        /* ignore */
+      }
+      const delay = Math.min(30000, 2000 * 2 ** Math.min(state.streamFailures - 3, 4));
+      clearTimeout(state.streamRetryTimer);
+      state.streamRetryTimer = setTimeout(connectStream, delay);
+    }
   };
 
   return es;
